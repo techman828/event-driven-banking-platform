@@ -1,232 +1,230 @@
-# Northbank
+# Northbank — Event-Driven Banking Platform
 
-**Event-Driven Retail Banking Platform**
+Northbank is a full-stack banking portfolio project built with Java 21, Spring Boot, Apache Kafka, and Next.js. It brings customer onboarding, accounts, money movement, credit applications, loan and card servicing, and staff review into one console.
 
-Northbank is a retail banking platform built from Java 21 / Spring Boot microservices
-behind a Spring Cloud Gateway and a Next.js backend-for-frontend, with Kafka for
-derived workflows, a logical PostgreSQL database per service and Redis, designed so that money
-movement stays correct under retries, concurrency and partial failure.
+The platform runs 11 business services behind an API gateway, with Eureka for service discovery, PostgreSQL databases owned by each service, and Redis for rate limiting, caching, and fraud counters. Kafka carries events for product provisioning, notifications, statistics, and fraud detection.
 
-[![CI](https://github.com/Kalab21/banking-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/Kalab21/banking-platform/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/Kalab21/banking-platform/actions/workflows/codeql.yml/badge.svg)](https://github.com/Kalab21/banking-platform/actions/workflows/codeql.yml)
-[![Security Scan](https://github.com/Kalab21/banking-platform/actions/workflows/security-scan.yml/badge.svg)](https://github.com/Kalab21/banking-platform/actions/workflows/security-scan.yml)
+This is a local demonstration using synthetic data. External wire, ACH, and SWIFT transfers are simulated records; they do not settle funds or debit balances.
 
-## What Northbank demonstrates
+![Customer dashboard](docs/screenshots/13-dashboard-desktop.png)
 
-- **Microservices with clear ownership**: 11 business services behind an API gateway
-  with Eureka discovery, each owning its own logical PostgreSQL database and Flyway migrations.
-- **Money-movement correctness**: idempotency keys on every money-moving request,
-  `SELECT … FOR UPDATE` on every balance change, and outcomes reported as unknown,
-  then reconciled, when the platform cannot know them.
-- **Reliable events**: a transactional outbox in every producer, idempotent consumers,
-  bounded retry and dead-letter topics.
-- **A full lending lifecycle**: application, versioned underwriting, staff review,
-  offer, customer decision, exactly-once provisioning, and loan and card servicing.
-- **A defended edge**: the JWT is validated once at the gateway, identity headers are
-  overwritten, a BFF keeps the bearer token out of the browser, and every service
-  checks ownership against stored records.
-- **Verification and delivery**: 1,482 application tests in CI (JUnit, Testcontainers,
-  Vitest, Playwright), plus Terraform architecture-invariant tests, live full-stack
-  suites, CodeQL and Trivy, Docker Compose for the whole stack, and Terraform-backed AWS
-  infrastructure.
+## What you can explore
 
-## End-to-End Architecture
+- **Customer onboarding:** registration, sign-in, optional TOTP two-factor authentication, profile management, and KYC review.
+- **Everyday banking:** checking and savings accounts, deposits, withdrawals, transfers, beneficiaries, and scheduled or recurring payments.
+- **Credit applications:** versioned underwriting decisions, staff review of referred applications, stored offers, customer acceptance, and event-driven product provisioning.
+- **Product servicing:** loan disbursement, repayment schedules, instalments and payoff; card purchases, payments, interest, and statements.
+- **Staff operations:** identity checks, application decisions, fraud alerts, and platform statistics, with ownership and role checks.
+- **Operational visibility:** request correlation, distributed traces, Prometheus metrics, and provisioned Grafana dashboards.
+
+![Staff review workbench](docs/screenshots/31-staff-review-workbench.png)
+
+See [Product Experience](docs/PRODUCT-EXPERIENCE.md) for more workflows and screenshots.
+
+## Architecture
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/architecture/northbank-end-to-end-dark.svg">
-  <img src="docs/architecture/northbank-end-to-end.svg" width="1000" alt="Northbank end-to-end architecture. Customers and staff use a web browser that holds no bearer token and talks only to the Next.js backend-for-frontend, an application BFF outside the current AWS Terraform. The BFF resolves the API hostname through Route 53 (DNS) and sends server-side HTTPS requests to CloudFront, with AWS WAF and an ACM certificate, which forwards to an Application Load Balancer that accepts only CloudFront's origin traffic, which forwards to the Spring Cloud Gateway. The gateway validates the JWT, forwards trusted identity headers, rate-limits and discovers services through Eureka. Eleven Spring Boot services are grouped by domain: identity (user-service); accounts and money movement (account-service, the only writer of balances, transaction-service, payment-service, integration-service); lending and cards (application-service, loan-service, credit-card-service); and risk and insight (fraud-detection, statistics-service, notification-service). REST and OpenFeign carry immediate authoritative operations; Kafka events carry derived, asynchronous workflows. Each service owns a logical PostgreSQL 16 database; in the AWS model the 11 logical databases share one RDS PostgreSQL deployment with Multi-AZ enabled by default. Redis holds rate limits, counters and cache (ElastiCache); Kafka uses a transactional outbox, idempotent consumers, retry and dead-letter topics (Amazon MSK). A runtime and operations rail shows ECS Fargate in private subnets, ECR, Secrets Manager, CloudWatch Logs, Prometheus, Grafana and Zipkin, and delivery tooling.">
+  <img alt="Northbank end-to-end architecture, showing the console, gateway, business services, messaging, data stores, and AWS infrastructure model" src="docs/architecture/northbank-end-to-end.svg">
 </picture>
 
-The diagram combines Northbank's application topology with its AWS infrastructure model;
-service-level calls, event contracts and infrastructure details are documented separately.
-The BFF resolves the API hostname through Route 53 and sends server-side API requests
-through CloudFront/WAF and the ALB, which accepts only CloudFront's origin traffic.
-Terraform models the AWS infrastructure across CloudFront/WAF, ALB, ECS Fargate, RDS
-PostgreSQL, ElastiCache, MSK, ECR, Secrets Manager and CloudWatch; the 11 service-owned
-logical databases share one RDS PostgreSQL deployment, with Multi-AZ enabled by default.
+The browser communicates with the Next.js server. Server Components and Server Actions call the gateway; the JWT stays in an HttpOnly cookie. The gateway validates tokens, replaces client-supplied identity headers, applies rate limits, and routes requests through Eureka.
 
-Requests enter through the Next.js backend-for-frontend, which makes every banking API
-call server-side. The API gateway is the only routed entry to the service network: it
-authenticates the caller and forwards an identity it derived itself. Services own their
-data, call each other over REST when they need an answer now, and publish Kafka events
-for everything that can lag.
+Only `account-service` changes account balances. Other services request balance changes through service calls. Transactional outboxes and consumer deduplication support event delivery; money movement endpoints use idempotency keys to make retries safe. Delivery guarantees and remaining consistency limits are documented in [Events](docs/EVENTS.md).
 
-The service-level diagram (every OpenFeign call, every topic, ports and databases) and
-data ownership are in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**; the Terraform is
-in [`infrastructure/aws/`](infrastructure/aws/).
+| Component | Port | Responsibility |
+|---|---|---|
+| `frontend` | 3000 | Next.js customer and staff console |
+| `api-gateway` | 8080 | Public API, JWT validation, rate limiting |
+| `eureka-server` | 8761 | Service discovery |
+| `user-service` | 8081 | Identity, authentication, 2FA, KYC, credit score |
+| `application-service` | 8082 | Applications, underwriting, offers, provisioning state |
+| `account-service` | 8083 | Accounts, balances, overdrafts |
+| `transaction-service` | 8084 | Deposits, withdrawals, transfers, reconciliation |
+| `payment-service` | 8085 | Beneficiaries, scheduled and recurring payments |
+| `statistics-service` | 8086 | Event-derived aggregates and cached read models |
+| `notification-service` | 8087 | Customer alerts |
+| `fraud-detection-service` | 8088 | Fraud rules, velocity checks, alerts, account freezes |
+| `credit-card-service` | 8089 | Cards, purchases, payments, interest, statements |
+| `loan-service` | 8090 | Loans, amortization, disbursement, repayments |
+| `integration-service` | 8091 | Simulated external transfers and FX |
 
-## Key Design Decisions
+Business service ports are internal to the default Compose network. Use the gateway on port 8080 for API traffic. The [Architecture guide](docs/ARCHITECTURE.md) describes database ownership and service interactions.
 
-- **REST for authoritative operations, Kafka for derived workflows.** A transfer must
-  know immediately whether the debit happened, so `transaction-service` calls
-  `account-service` synchronously (OpenFeign, with a Resilience4j circuit breaker on
-  that path and no automatic retry). Statistics, notifications, fraud scoring and
-  product provisioning tolerate lag and consume events, so an outage there never blocks
-  money movement. *Trade-off:* a transfer spans two services with no distributed
-  transaction, so a partial outcome is recorded and reconciled rather than hidden.
-- **Logical database per service.** Each service owns its schema and migrates independently,
-  and only `account-service` writes a balance. *Trade-off:* no cross-service joins and
-  no distributed ACID; read models such as statistics are built from events.
-- **A backend-for-frontend instead of a browser API client.** The JWT stays in an
-  httpOnly cookie, the gateway needs no CORS policy, and the browser receives narrowed
-  views rather than API records. *Trade-off:* the console needs a Node runtime rather
-  than a static bundle.
+## Quick start
 
-## Product Experience
+### Prerequisites
 
-| Customer dashboard | Staff review workbench |
-|---|---|
-| ![The customer dashboard: total balance, account cards, balance history and recent activity](docs/screenshots/13-dashboard-desktop.png) | ![A referred application with the applicant, what they stated, the policy's reason code, and Approve or Reject](docs/screenshots/31-staff-review-workbench.png) |
-| Balances, accounts and activity read from the account and transaction services. | Staff decide referred applications with the policy's reason code and an append-only history. |
+- JDK 21 and Maven 3.8 or newer.
+- Docker Desktop or Docker Engine with Docker Compose v2.
+- Node.js 22 and npm for local frontend development or the demo seed script.
+- Bash and curl for `scripts/seed-demo.sh` (for example, Git Bash or WSL on Windows).
 
-```text
-Explore / Apply → Underwrite → Review → Offer → Accept → Provision → Service
+The full stack includes 13 JVM processes plus the console and infrastructure. Each backend container has a 1 GiB memory limit; allow sufficient Docker resources, or use the infrastructure-only development option below.
+
+### Configure the environment
+
+From the repository root, copy the environment template:
+
+```bash
+cp .env.example .env
 ```
 
-More product workflows: **[docs/PRODUCT-EXPERIENCE.md](docs/PRODUCT-EXPERIENCE.md)**
+In PowerShell, use `Copy-Item .env.example .env`.
 
-## Engineering highlights
+Replace `JWT_SECRET` in `.env` with a random secret of at least 256 bits. For example, generate one with:
 
-- **`SELECT … FOR UPDATE`** on every balance change. Two concurrent debits are applied
-  one after the other, and this is proven against a real PostgreSQL.
-- **Idempotency keys** on deposits, withdrawals, transfers, payments, loan repayments
-  and card payments, stored under a unique constraint with a fingerprint of the caller
-  and request. The console mints the key at the review step and reuses it on every
-  retry; a concurrent duplicate executes once.
-- **A transactional outbox** in every producer, so a committed change is never left
-  unannounced. Consumers retry with backoff, send failures to a dead-letter topic, and
-  discard duplicates.
-- **Append-only decision evidence** for underwriting and review, and **stored offer
-  terms** that the customer accepts exactly as made.
-- **Provisioning confirmation**: an application reads `PROVISIONED` only after the loan
-  or card service confirms a real product ID, and a redelivered event creates nothing
-  new.
-- **Reconciliation**: a transfer that debited but failed to credit is recorded first,
-  then reconciled leg by leg. Deciding who is made whole is left to a person.
+```bash
+openssl rand -base64 48
+```
 
-## Security & Trust Boundaries
+The gateway and user service must share the same secret; Compose passes the value to both. Keep `.env` local. The template also defines local PostgreSQL and demo reviewer credentials.
 
-The dashed zones in the diagram mark the trust boundaries: the AWS API edge, the
-gateway, the private service network, and the data layer; the browser reaches only the BFF.
+### Build and start
 
-- **Identity is established once, at the gateway.** It validates the JWT and overwrites
-  `X-User-Id`, `X-Username` and `X-User-Role` on every routed request, so a client
-  cannot assert an identity of its own.
-- **The bearer token never reaches browser JavaScript.** The BFF keeps the JWT in an
-  httpOnly, SameSite=Lax cookie and calls the gateway server-side.
-- **Ownership is checked against stored records.** Each service authorizes through
-  `AccessGuard` against the owner recorded with the account, payment, loan, card or
-  application, never an id taken from the request. Staff can read, deposit and review,
-  but cannot take money out of a customer's account, accept an offer on a customer's
-  behalf, or decide about themselves.
-- **Sign-in is hardened.** BCrypt password hashes, TOTP two-factor authentication, and a
-  per-account login throttle in Redis that fails closed, alongside the gateway's per-IP
-  rate limit.
-- **Money integrity is enforced in the database.** Idempotency records under a unique
-  constraint, row locks on balances, and outbox rows written in the same transaction as
-  the change they announce.
-- **Business services are private.** They publish no host ports and stay on the
-  private service network, reachable only through explicit gateway `/api/**` routes or
-  internal service paths; the `/internal/**` service-to-service endpoints are never
-  routed from outside.
-- **Code and supply-chain scanning.** CodeQL over Java and TypeScript; Trivy over
-  dependencies, Dockerfiles, the base image and the Terraform.
+```bash
+mvn clean package -DskipTests
+docker compose up -d --build
+docker compose ps
+```
 
-The threat model, the authorization rules principal by principal, sensitive-data
-handling, and how scanner findings are assessed are in
-**[docs/SECURITY.md](docs/SECURITY.md)**.
+The backend images copy prebuilt JARs from each module's `target/` directory, so the Maven build must run before the Docker build. Allow several minutes for infrastructure health checks and service registration.
 
-## Reliability & Observability
+| Entry point | Address |
+|---|---|
+| Banking console | http://localhost:3000 |
+| API gateway | http://localhost:8080 |
+| Gateway readiness | http://localhost:8080/actuator/health/readiness |
+| Eureka dashboard | http://localhost:8761 |
+| Kafka UI | http://localhost:8095 |
 
-- Consumers claim each event id under a unique constraint in the same transaction as
-  their work, so redelivery is harmless; retries are bounded, and
-  exhausted records land on a `.DLT` topic with their failure context.
-- Kafka producers fail fast (`max.block.ms` of one second), so a broker outage cannot
-  hang request threads while a balance row is locked.
-- Every service exports Micrometer metrics to Prometheus, read by a provisioned Grafana
-  dashboard, and traces to Zipkin. An `X-Request-Id` minted at the gateway follows a
-  request across every REST and Feign hop.
+PostgreSQL, Redis, and Kafka are available to local development tools on ports `5432`, `6379`, and `9094`, respectively.
 
-Details: [docs/EVENTS.md](docs/EVENTS.md) and [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
+### Try a customer and staff workflow
+
+Register a customer in the console, or populate a demonstration customer from a Bash shell:
+
+```bash
+bash scripts/seed-demo.sh
+```
+
+The script needs Node.js and curl. It prints the generated customer credentials and creates accounts, transactions, a beneficiary, approved KYC documents, and serviced loan and card products through the public API. Each run creates a fresh customer. If you changed the reviewer credentials in `.env`, export the same `NORTHBANK_DEMO_STAFF_USERNAME` and `NORTHBANK_DEMO_STAFF_PASSWORD` values in the shell before seeding.
+
+The default Compose stack creates this synthetic staff account:
+
+| Username | Password |
+|---|---|
+| `northbank.reviewer` | `ReviewerDemo2026!` |
+
+Use it to review identity documents and referred applications. Registration creates a customer profile; opening a deposit account is a separate action.
+
+### Stop the stack
+
+```bash
+docker compose down
+```
+
+Named volumes retain data. Adding `-v` deletes the stack's persisted data, including its databases.
+
+## Local development
+
+To run infrastructure in Docker and services from an IDE:
+
+```bash
+docker compose -f docker-compose.infra.yml up -d
+mvn install -DskipTests
+```
+
+Start `eureka-server`, then `api-gateway`, then the business services you need. Service configuration defaults to local infrastructure addresses. Set `JWT_SECRET` in the environment of both the gateway and user service; Compose's `.env` file is not automatically loaded by an IDE or Maven process.
+
+To run the console against a running gateway, first stop the Docker frontend if it occupies port 3000, then:
+
+```bash
+cd frontend
+npm ci
+cp .env.example .env.local
+npm run dev
+```
+
+The frontend's `API_GATEWAY_URL` defaults in the template to `http://localhost:8080`.
+
+For local Swagger UI and direct service access:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev-ports.yml up -d
+```
+
+This override exposes business service ports and enables their API documentation at `http://localhost:<service-port>/swagger-ui.html`. It bypasses the gateway boundary, so use it only for local debugging. API documentation is disabled in the normal stack.
+
+See [Development](docs/DEVELOPMENT.md) for API routes, proxy certificate configuration, and additional setup details.
 
 ## Testing
 
-| Suite | Where it runs | Count |
-|---|---|---:|
-| Backend unit and web-slice | CI | 870 |
-| Backend integration (Testcontainers, PostgreSQL, Redis, embedded Kafka) | CI | 158 |
-| Frontend unit and component | CI | 385 |
-| Playwright against a production build, no backend | CI | 69 |
-| **Application tests in CI** | | **1,482** |
-| Playwright against the full running stack | on demand | 46 |
-| PowerShell full-stack suite (assertions) | on demand | 200 |
-
-The live suites need all 13 backend processes running, so they are run on demand rather
-than on every push. CI also runs Terraform architecture-invariant tests against mocked
-AWS providers; they check the infrastructure model, not the application, and are not
-counted above. See [docs/TESTING.md](docs/TESTING.md).
-
-## Technology
-
-| | |
-|---|---|
-| **Backend** | Java 21, Spring Boot 3.3, Spring Cloud Gateway, Eureka, OpenFeign, Resilience4j |
-| **Frontend** | Next.js 16, React 19, TypeScript, Tailwind CSS 4 |
-| **Data and messaging** | PostgreSQL 16 with Flyway, Redis 7, Apache Kafka |
-| **Security** | JWT at the gateway, BCrypt, TOTP two-factor, per-resource ownership checks |
-| **Observability** | Micrometer, Prometheus, Grafana, Zipkin, `X-Request-Id` correlation |
-| **Testing and delivery** | JUnit 5, Testcontainers, Vitest, Playwright, GitHub Actions, CodeQL, Trivy, Docker Compose, Terraform |
-
-## Project scope
-
-Runs on synthetic financial data with simulated wire, ACH and SWIFT rails. Local
-execution uses Docker Compose; the AWS infrastructure is modeled in Terraform, and CI
-formats, validates and scans it and checks its architecture invariants against mocked
-providers. No production, regulatory or compliance claim is made.
-
-## Run locally
-
-Prerequisites: JDK 21+, Maven 3.8+, Docker Desktop.
+Backend tests:
 
 ```bash
-git clone https://github.com/Kalab21/banking-platform.git
-cd banking-platform
-cp .env.example .env      # then set the values
-mvn clean package         # build the service jars
-docker compose up -d      # infrastructure, gateway, Eureka and 11 services
-./scripts/seed-demo.sh    # optional: a synthetic customer; credentials are printed
+mvn test       # Unit and web-slice tests
+mvn verify     # Includes integration tests; Docker must be running
 ```
 
-| Endpoint | URL |
-|---|---|
-| **Banking console** | **<http://localhost:3000>** |
-| API gateway | <http://localhost:8080> |
-| Eureka dashboard | <http://localhost:8761> |
-| Kafka UI | <http://localhost:8095> |
+Frontend checks, from `frontend/`:
 
-IDE-based setup, frontend-only development, the API reference and troubleshooting are
-in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+```bash
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npx playwright install chromium
+npm run test:e2e
+```
+
+The default Playwright project uses a stubbed gateway and a production frontend build. Live Playwright scenarios and the root `e2e-tests.ps1` suite exercise a running stack; follow [Testing](docs/TESTING.md) for their environment and seed requirements.
+
+## Observability
+
+After starting the main stack, start the optional monitoring containers:
+
+```bash
+docker compose -f docker-compose.observability.yml up -d
+```
+
+| Tool | Address |
+|---|---|
+| Grafana | http://localhost:3001 |
+| Prometheus | http://localhost:9090 |
+| Zipkin | http://localhost:9411 |
+
+Grafana allows anonymous dashboard viewing; local editing credentials are `admin` / `admin`. See [Observability](docs/OBSERVABILITY.md) for dashboards, metrics, tracing, and request correlation.
+
+## Repository guide
+
+| Path | Contents |
+|---|---|
+| `frontend/` | Next.js, React, TypeScript, Tailwind CSS, Vitest, and Playwright |
+| `*-service/` | Spring Boot business services |
+| `api-gateway/`, `eureka-server/` | Gateway and service registry |
+| `common-events/` | Shared versioned event contracts |
+| `common-kafka/` | Shared Kafka delivery support |
+| `common-idempotency/` | Shared request idempotency support |
+| `common-security/`, `common-observability/` | Caller identity, authorization, and telemetry support |
+| `docker/`, `docker-compose*.yml` | Local runtime and database initialization |
+| `observability/` | Prometheus configuration and Grafana dashboards |
+| `infrastructure/aws/` | Terraform infrastructure model and architecture tests |
+| `scripts/`, `e2e-tests.ps1` | Demo seeding and full-stack checks |
+| `.github/workflows/` | CI, CodeQL, and security scans |
 
 ## Documentation
 
-| Document | What it covers |
-|---|---|
-| [Architecture](docs/ARCHITECTURE.md) | Topology, service boundaries, data ownership, design decisions |
-| [Security](docs/SECURITY.md) | Threat model, authentication, authorization, sensitive data, dependency security |
-| [Testing](docs/TESTING.md) | Strategy, suites, counts, commands |
-| [Events](docs/EVENTS.md) | Kafka contracts, delivery, retry, dead-letter topics, idempotency |
-| [Observability](docs/OBSERVABILITY.md) | Metrics, tracing, dashboards |
-| [Development](docs/DEVELOPMENT.md) | Local setup, ports, commands, troubleshooting |
-| [Product experience](docs/PRODUCT-EXPERIENCE.md) | Money movement, credit application, offers and servicing, screen by screen |
-| [AWS infrastructure](infrastructure/aws/) | Terraform model of the AWS infrastructure |
+- [Architecture](docs/ARCHITECTURE.md): topology, data ownership, request flows, and design decisions.
+- [Events](docs/EVENTS.md): contracts, topics, producers, consumers, retries, and delivery guarantees.
+- [Security](docs/SECURITY.md): trust boundaries, ownership checks, authentication, and known limits.
+- [Development](docs/DEVELOPMENT.md): local setup, API reference, and troubleshooting.
+- [Testing](docs/TESTING.md): test suites and commands.
+- [Observability](docs/OBSERVABILITY.md): metrics, dashboards, logs, and traces.
+- [Product Experience](docs/PRODUCT-EXPERIENCE.md): illustrated customer and staff journeys.
+- [Frontend](frontend/README.md): console structure and server-side API access.
 
-## Copyright & Usage
+## License
 
-© 2026–present Kalabe Kebede. All Rights Reserved.
-
-Northbank is proprietary software, published for demonstration and technical
-evaluation. It is not open source. No permission is granted to reuse, modify,
-redistribute or commercially exploit its original material without written permission.
-Third-party components remain under their own licences.
-
-See [LICENSE](LICENSE) for the full terms.
+Copyright © 2026–present Kalabe Kebede. All rights reserved. This is proprietary portfolio software; see [LICENSE](LICENSE) for the terms.
